@@ -2,11 +2,13 @@ package socket_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"runtime"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/mdlayher/socket/internal/sockettest"
 	"golang.org/x/net/nettest"
 	"golang.org/x/sync/errgroup"
@@ -21,20 +24,73 @@ import (
 )
 
 func TestConn(t *testing.T) {
-	nettest.TestConn(t, makePipe)
+	t.Parallel()
 
-	// Our own extensions to TestConn.
-	t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, makePipe, testCloseReadWrite) })
+	tests := []struct {
+		name string
+		pipe nettest.MakePipe
+	}{
+		// Standard library plumbing.
+		{
+			name: "basic",
+			pipe: makePipe(
+				func() (net.Listener, error) {
+					return sockettest.Listen(0, nil)
+				},
+				func(addr net.Addr) (net.Conn, error) {
+					return sockettest.Dial(context.Background(), addr, nil)
+				},
+			),
+		},
+		// Our own implementations which have context cancelation support.
+		{
+			name: "context",
+			pipe: makePipe(
+				func() (net.Listener, error) {
+					l, err := sockettest.Listen(0, nil)
+					if err != nil {
+						return nil, err
+					}
+
+					return l.Context(context.Background()), nil
+				},
+				func(addr net.Addr) (net.Conn, error) {
+					ctx := context.Background()
+
+					c, err := sockettest.Dial(ctx, addr, nil)
+					if err != nil {
+						return nil, err
+					}
+
+					return c.Context(ctx), nil
+				},
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			nettest.TestConn(t, tt.pipe)
+
+			// Our own extensions to TestConn.
+			t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, tt.pipe, testCloseReadWrite) })
+		})
+	}
 }
 
 func TestDialTCPNoListener(t *testing.T) {
+	t.Parallel()
+
 	// See https://github.com/mdlayher/vsock/issues/47 and
 	// https://github.com/lxc/lxd/pull/9894 for context on this test.
 	//
 	//
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNREFUSED.
-	_, err := sockettest.Dial(&net.TCPAddr{
+	_, err := sockettest.Dial(context.Background(), &net.TCPAddr{
 		IP:   net.IPv6loopback,
 		Port: math.MaxUint16,
 	}, nil)
@@ -45,7 +101,243 @@ func TestDialTCPNoListener(t *testing.T) {
 	}
 }
 
+func TestDialTCPContextCanceledBefore(t *testing.T) {
+	t.Parallel()
+
+	// Context is canceled before any dialing can take place.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := sockettest.Dial(ctx, &net.TCPAddr{
+		IP:   net.IPv6loopback,
+		Port: math.MaxUint16,
+	}, nil)
+
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	}
+}
+
+var ipTests = []struct {
+	name string
+	ip   netip.Addr
+}{
+	// It appears we can dial addresses in the documentation range and
+	// connect will hang, which is perfect for this test case.
+	{
+		name: "IPv4",
+		ip:   netip.MustParseAddr("192.0.2.1"),
+	},
+	{
+		name: "IPv6",
+		ip:   netip.MustParseAddr("2001:db8::1"),
+	},
+}
+
+func TestDialTCPContextCanceledDuring(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range ipTests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Context is canceled during a blocking operation but without an
+			// explicit deadline passed on the context.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			go func() {
+				time.Sleep(1 * time.Second)
+				cancel()
+			}()
+
+			_, err := sockettest.Dial(ctx, &net.TCPAddr{
+				IP:   tt.ip.AsSlice(),
+				Port: math.MaxUint16,
+			}, nil)
+			if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
+				t.Skipf("skipping, no outbound %s connectivity: %v", tt.name, err)
+			}
+
+			if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestDialTCPContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range ipTests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Dialing is canceled after the deadline passes.
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+
+			_, err := sockettest.Dial(ctx, &net.TCPAddr{
+				IP:   tt.ip.AsSlice(),
+				Port: math.MaxUint16,
+			}, nil)
+			if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
+				t.Skipf("skipping, no outbound %s connectivity: %v", tt.name, err)
+			}
+
+			if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestListenerAcceptTCPContextCanceledBefore(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Context is canceled before accept can take place.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerAcceptTCPContextCanceledDuring(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Context is canceled during a blocking operation but without an
+	// explicit deadline passed on the context.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		cancel()
+	}()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerAcceptTCPContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Accept is canceled after the deadline passes.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerConnTCPContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	defer l.Close()
+
+	// Accept a single connection.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+		defer c.Close()
+
+		// Context is canceled during recvfrom.
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		b := make([]byte, 1024)
+		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, b, 0)
+		return err
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	defer c.Close()
+
+	// Client never sends data, so we wait until ctx cancel and errgroup return.
+	if diff := cmp.Diff(context.DeadlineExceeded, eg.Wait(), cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected recvfrom error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerConnTCPContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	defer l.Close()
+
+	// Accept a single connection.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+		defer c.Close()
+
+		// Context is canceled before recvfrom can take place.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		b := make([]byte, 1024)
+		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, b, 0)
+		return err
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	defer c.Close()
+
+	// Client never sends data, so we wait until ctx cancel and errgroup return.
+	if diff := cmp.Diff(context.Canceled, eg.Wait(), cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected recvfrom error (-want +got):\n%s", diff)
+	}
+}
+
 func TestFileConn(t *testing.T) {
+	t.Parallel()
+
 	// Use raw system calls to set up the socket since we assume anything being
 	// passed into a FileConn is set up by another system, such as systemd's
 	// socket activation.
@@ -109,41 +401,46 @@ func TestFileConn(t *testing.T) {
 // Copyright 2016 The Go Authors. All rights reserved. Use of this source
 // code is governed by a BSD-style license that can be found in the LICENSE
 // file.
-func makePipe() (c1, c2 net.Conn, stop func(), err error) {
-	ln, err := sockettest.Listen(0, nil)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// Start a connection between two endpoints.
-	var err1, err2 error
-	done := make(chan bool)
-	go func() {
-		c2, err2 = ln.Accept()
-		close(done)
-	}()
-	c1, err1 = sockettest.Dial(ln.Addr(), nil)
-	<-done
-
-	stop = func() {
-		if err1 == nil {
-			c1.Close()
+func makePipe(
+	listen func() (net.Listener, error),
+	dial func(addr net.Addr) (net.Conn, error),
+) nettest.MakePipe {
+	return func() (c1, c2 net.Conn, stop func(), err error) {
+		ln, err := listen()
+		if err != nil {
+			return nil, nil, nil, err
 		}
-		if err2 == nil {
-			c2.Close()
-		}
-		ln.Close()
-	}
 
-	switch {
-	case err1 != nil:
-		stop()
-		return nil, nil, nil, err1
-	case err2 != nil:
-		stop()
-		return nil, nil, nil, err2
-	default:
-		return c1, c2, stop, nil
+		// Start a connection between two endpoints.
+		var err1, err2 error
+		done := make(chan bool)
+		go func() {
+			c2, err2 = ln.Accept()
+			close(done)
+		}()
+		c1, err1 = dial(ln.Addr())
+		<-done
+
+		stop = func() {
+			if err1 == nil {
+				c1.Close()
+			}
+			if err2 == nil {
+				c2.Close()
+			}
+			ln.Close()
+		}
+
+		switch {
+		case err1 != nil:
+			stop()
+			return nil, nil, nil, err1
+		case err2 != nil:
+			stop()
+			return nil, nil, nil, err2
+		default:
+			return c1, c2, stop, nil
+		}
 	}
 }
 
@@ -207,7 +504,7 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 			t.Errorf("unexpected cc1.CloseWrite error: %v", err)
 		}
 		_, err := cc1.Write(b)
-		if nerr, ok := err.(net.Error); !ok || nerr.Temporary() {
+		if nerr, ok := err.(net.Error); !ok || nerr.Timeout() {
 			t.Errorf("unexpected final cc1.Write error: %v", err)
 		}
 	}()
@@ -217,7 +514,7 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 
 		// Reading succeeds at first but should result in an EOF error after
 		// closing the read side of the net.Conn.
-		if err := chunkedCopy(ioutil.Discard, cc2); err != nil {
+		if err := chunkedCopy(io.Discard, cc2); err != nil {
 			t.Errorf("unexpected initial cc2.Read error: %v", err)
 		}
 		if err := cc2.CloseRead(); err != nil {

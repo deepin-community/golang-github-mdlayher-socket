@@ -1,0 +1,23 @@
+From: Shengjing Zhu <zhsj@debian.org>
+Date: Fri, 18 Aug 2023 13:30:45 +0800
+Subject: Skip TestLinuxOpenPIDFD when PIDFD_NONBLOCK not implemented
+
+PIDFD_NONBLOCK is added in Linux 5.10
+---
+ conn_linux_test.go | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/conn_linux_test.go b/conn_linux_test.go
+index 00a7a6d..8a48d90 100644
+--- a/conn_linux_test.go
++++ b/conn_linux_test.go
+@@ -168,6 +168,9 @@ func TestLinuxOpenPIDFD(t *testing.T) {
+ 	// ENOTSOCK, as is the case with pidfds.
+ 	fd, err := unix.PidfdOpen(1, unix.PIDFD_NONBLOCK)
+ 	if err != nil {
++		if errors.Is(err, unix.EINVAL) {
++			t.Skipf("skipping, PIDFD_NONBLOCK is not implemented: %v", err)
++		}
+ 		t.Fatalf("failed to open pidfd for init: %v", err)
+ 	}
+ 
