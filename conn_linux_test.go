@@ -4,6 +4,7 @@
 package socket_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -20,6 +21,8 @@ import (
 )
 
 func TestLinuxConnBuffers(t *testing.T) {
+	t.Parallel()
+
 	// This test isn't necessarily Linux-specific but it's easiest to verify on
 	// Linux because we can rely on the kernel's documented buffer size
 	// manipulation behavior.
@@ -70,6 +73,8 @@ func TestLinuxConnBuffers(t *testing.T) {
 }
 
 func TestLinuxNetworkNamespaces(t *testing.T) {
+	t.Parallel()
+
 	l, err := sockettest.Listen(0, nil)
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -129,6 +134,8 @@ func TestLinuxNetworkNamespaces(t *testing.T) {
 }
 
 func TestLinuxDialVsockNoListener(t *testing.T) {
+	t.Parallel()
+
 	// See https://github.com/mdlayher/vsock/issues/47 and
 	// https://github.com/lxc/lxd/pull/9894 for context on this test.
 	c, err := socket.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0, "vsock", nil)
@@ -139,13 +146,69 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
 
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNRESET.
-	_, err = c.Connect(&unix.SockaddrVM{
+	_, err = c.Connect(context.Background(), &unix.SockaddrVM{
 		CID:  unix.VMADDR_CID_LOCAL,
 		Port: math.MaxUint32,
 	})
+	if err == nil {
+		// See https://github.com/mdlayher/socket/issues/4.
+		t.Skipf("skipping, expected error but vsock successfully connected to local service")
+	}
 
 	want := os.NewSyscallError("connect", unix.ECONNRESET)
 	if diff := cmp.Diff(want, err); diff != "" {
 		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	}
+}
+
+func TestLinuxOpenPIDFD(t *testing.T) {
+	// Verify we can use regular files with socket by properly handling
+	// ENOTSOCK, as is the case with pidfds.
+	fd, err := unix.PidfdOpen(1, unix.PIDFD_NONBLOCK)
+	if err != nil {
+		t.Fatalf("failed to open pidfd for init: %v", err)
+	}
+
+	c, err := socket.New(fd, "pidfd")
+	if err != nil {
+		t.Fatalf("failed to open Conn for pidfd: %v", err)
+	}
+	_ = c.Close()
+}
+
+func TestLinuxBindToDevice(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	// Assumes the loopback interface is always the first device on Linux
+	// machines.
+	const (
+		name  = "lo"
+		index = 1
+	)
+
+	if err := c.SetsockoptString(unix.SOL_SOCKET, unix.SO_BINDTODEVICE, name); err != nil {
+		t.Fatalf("failed to bind to device: %v", err)
+	}
+
+	gotName, err := c.GetsockoptString(unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
+	if err != nil {
+		t.Fatalf("failed to get bound interface name: %v", err)
+	}
+	if diff := cmp.Diff(name, gotName); diff != "" {
+		t.Fatalf("unexpected interface name (-want +got):\n%s", diff)
+	}
+
+	gotIndex, err := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
+	if err != nil {
+		t.Fatalf("failed to get bound interface index: %v", err)
+	}
+	if diff := cmp.Diff(index, gotIndex); diff != "" {
+		t.Fatalf("unexpected interface index (-want +got):\n%s", diff)
 	}
 }

@@ -1,5 +1,93 @@
-golang-github-mdlayher-socket (0.2.1) unstable; urgency=medium
+golang-github-mdlayher-socket (0.5.1-1deepin1) unstable; urgency=medium
 
-  * Initial Release.
+  * Skip Failed TEST.
 
- -- electricface <songwentai@uniontech.com>  Thu, 14 Jul 2022 10:57:09 +0800
+ -- Gui-Yue <yuemeng.gui@gmail.com>  Fri, 12 Jul 2024 21:48:39 +0800
+
+golang-github-mdlayher-socket (0.5.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * d/control:
+    - Downgrade minimum required Go version to 1.20, as indicated by upstream
+    - Update Standards-Version to 4.7.0 (no changes needed)
+  * Update years in d/control
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sun, 21 Apr 2024 13:58:30 +0000
+
+golang-github-mdlayher-socket (0.5.0-2) unstable; urgency=medium
+
+  * Team upload
+  * Skip TestLinuxBindToDevice when failed to bind device
+
+ -- Shengjing Zhu <zhsj@debian.org>  Thu, 22 Feb 2024 18:07:41 +0800
+
+golang-github-mdlayher-socket (0.5.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * d/copyright:
+    - Update years
+    - Add myself
+  * d/control:
+    - Update my email address
+    - Bump minimum required Go version to 1.21, as indicated by upstream
+      release
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 09 Sep 2023 15:32:07 +0000
+
+golang-github-mdlayher-socket (0.4.1-2) unstable; urgency=medium
+
+  * Team upload
+  * Skip failed tests on different kernel versions
+    + TestLinuxOpenPIDFD: PIDFD_NONBLOCK is only available since Linux 5.10
+    + TestLinuxDialVsockNoListener: different kernel versions report different
+      error codes.
+
+ -- Shengjing Zhu <zhsj@debian.org>  Fri, 18 Aug 2023 13:40:02 +0800
+
+golang-github-mdlayher-socket (0.4.1-1) unstable; urgency=medium
+
+  * Team upload
+  * New upstream release
+  * Bump Standards-Version to 4.6.2 (no changes)
+  * Replace dh-golang with dh-sequence-golang
+
+ -- Daniel Swarbrick <dswarbrick@debian.org>  Mon, 26 Jun 2023 13:23:43 +0000
+
+golang-github-mdlayher-socket (0.4.0-1) unstable; urgency=medium
+
+  * Team upload
+  * New upstream release
+  * Bump minimum required Go version to 1.18, as indicated by upstream release
+    notes
+  * Bump Standards-Version to 4.6.1 (no changes)
+
+ -- Daniel Swarbrick <dswarbrick@debian.org>  Mon, 12 Dec 2022 20:23:55 +0000
+
+golang-github-mdlayher-socket (0.2.3-2) unstable; urgency=medium
+
+  * Add a patch so test is skipped rather than failing if
+    the vsock kernel module isn't loaded
+
+ -- Mathias Gibbens <mathias@calenhad.com>  Wed, 27 Apr 2022 21:42:07 +0530
+
+golang-github-mdlayher-socket (0.2.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * d/control:
+    - Add myself to Uploaders
+    - Set minimum version of golang-golang-x-sys
+    - Add Multi-Arch: foreign
+
+ -- Mathias Gibbens <mathias@calenhad.com>  Tue, 26 Apr 2022 08:04:16 +0530
+
+golang-github-mdlayher-socket (0.1.1-2) unstable; urgency=medium
+
+  * No-change upload to build on buildd.
+
+ -- Benjamin Drung <bdrung@debian.org>  Fri, 14 Jan 2022 19:07:40 +0100
+
+golang-github-mdlayher-socket (0.1.1-1) unstable; urgency=medium
+
+  * Initial release (Closes: #1003460)
+
+ -- Benjamin Drung <bdrung@debian.org>  Fri, 14 Jan 2022 17:05:11 +0100

@@ -1,0 +1,25 @@
+From: Mathias Gibbens <mathias@calenhad.com>
+Date: Sat, 22 Jul 2023 03:49:19 +0800
+Subject: Skip rather than fail a vsock test,
+ since the buildds seem not to have the vsock kernel module loaded
+
+Forwarded: not-needed
+---
+ conn_linux_test.go | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/conn_linux_test.go b/conn_linux_test.go
+index 0f7a882..00a7a6d 100644
+--- a/conn_linux_test.go
++++ b/conn_linux_test.go
+@@ -140,7 +140,9 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
+ 	// https://github.com/lxc/lxd/pull/9894 for context on this test.
+ 	c, err := socket.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0, "vsock", nil)
+ 	if err != nil {
+-		t.Fatalf("failed to open socket: %v", err)
++		// The buildds seem not to have the vsock kernel module loaded, so skip
++		// the test if we can't open the socket
++		t.Skipf("failed to open socket: %v", err)
+ 	}
+ 	defer c.Close()
+ 
